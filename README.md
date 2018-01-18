@@ -1,4 +1,4 @@
-# 1-Wire Communication with Beckhoff PLCs
+# 1-Wire Communication with Beckhoff PLCs / TwinCAT
 
 Currently supported 1-Wire adapters:
 
