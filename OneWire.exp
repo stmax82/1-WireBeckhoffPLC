@@ -1,0 +1,2165 @@
+
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @PATH := '\/OneWire\/Sensors' *)
+(* @OBJECTFLAGS := '0, 8' *)
+(* @SYMFILEFLAGS := '2048' *)
+FUNCTION_BLOCK DS1820ConvertTemperature
+(*
+   Makes all DS18S20 / DS18B20 sensors on the network start temperature conversion.
+
+   See DS18S20 / DS18B20 data sheets for details.
+*)
+VAR_INPUT
+	start: BOOL;
+END_VAR
+VAR_OUTPUT
+	busy     : BOOL;
+	error    : BOOL;
+	errormsg : STRING;
+END_VAR
+VAR_IN_OUT
+	rx: ComBuffer;
+	tx: ComBuffer;
+END_VAR
+VAR
+	step: INT;
+
+	SendByte: SendByte;
+	RecvByte: ReceiveByte;
+
+	OneWireReset   : OneWireReset;
+	OneWireSkipROM : OneWireSkipROM;
+
+	timeout: TON;
+END_VAR
+(* @END_DECLARATION := '0' *)
+IF NOT start THEN
+	step := 0;
+END_IF
+
+CASE step OF
+0:
+	IF start THEN
+		busy := TRUE;
+		error := FALSE;
+		errormsg := '';
+
+		timeout(in := FALSE, pt := t#2.5s);
+		timeout(in := TRUE);
+
+		step := 100;
+	END_IF
+
+100:
+	OneWireReset(start := FALSE, rx := rx, tx := tx);
+
+	step := 200;
+
+200:
+	OneWireReset(start := TRUE, rx := rx, tx := tx);
+
+	IF NOT OneWireReset.busy THEN
+		IF OneWireReset.error THEN
+			error := TRUE;
+			errormsg := '1-Wire reset failed.';
+
+			step := 9999;
+		ELSE
+			step := 300;
+		END_IF
+	END_IF
+
+300:
+	OneWireSkipROM(start := FALSE, rx := rx, tx := tx);
+
+	step := 400;
+
+400:
+	OneWireSkipROM(start := TRUE, rx := rx, tx := tx);
+
+	IF NOT OneWireSkipROM.busy THEN
+		IF OneWireSkipROM.error THEN
+			error := TRUE;
+			errormsg := 'Skip ROM failed.';
+
+			step := 9999;
+		ELSE
+			step := 500;
+		END_IF
+	END_IF
+
+500:
+	SendByte(SendByte := 16#E3, TxBuffer := tx); (* Set Command Mode *)
+	SendByte(SendByte := 16#3B, TxBuffer := tx); (* Set Pullup Duration to 1048ms *)
+
+	step := 600;
+
+600:
+	RecvByte(RxBuffer := rx);
+
+	IF RecvByte.ByteReceived THEN
+		IF RecvByte.ReceivedByte = 16#3A THEN (* Set Pullup Duration Response *)
+			step := 700;
+		ELSE
+			error := TRUE;
+			errormsg := 'Invalid set pull up duration response.';
+
+			step := 9999;
+		END_IF
+	END_IF
+
+	timeout(in := TRUE);
+
+	IF timeout.Q THEN
+		error := TRUE;
+		errormsg := 'Timeout';
+
+		step := 9999;
+	END_IF
+
+700:
+	SendByte(SendByte := 16#EF, TxBuffer := tx); (* Arm 5V Strong Pullup *)
+	SendByte(SendByte := 16#F1, TxBuffer := tx); (* Terminate Pulse - needed to save time. *)
+
+	step := 800;
+
+800:
+	RecvByte(RxBuffer := rx);
+
+	IF RecvByte.ByteReceived THEN
+		IF (RecvByte.ReceivedByte AND 16#FC) = 16#EC THEN (* Arm 5V Strong Pullup Response *)
+			step := 900;
+		ELSE
+			error := TRUE;
+			errormsg := 'Invalid arm 5V strong pullup response.';
+
+			step := 9999;
+		END_IF
+	END_IF
+
+	timeout(in := TRUE);
+
+	IF timeout.Q THEN
+		error := TRUE;
+		errormsg := 'Timeout';
+
+		step := 9999;
+	END_IF
+
+900:
+	SendByte(SendByte := 16#E1, TxBuffer := tx); (* Set Data Mode *)
+	SendByte(SendByte := 16#44, TxBuffer := tx); (* Convert Temperature *)
+
+	step := 1000;
+
+1000:
+	RecvByte(RxBuffer := rx);
+
+	IF RecvByte.ByteReceived THEN
+		IF RecvByte.ReceivedByte = 16#44 THEN (* Convert Temperature Response *)
+			step := 1100;
+		ELSE
+			error := TRUE;
+			errormsg := 'Invalid convert temperature response.';
+
+			step := 9999;
+		END_IF
+	END_IF
+
+	timeout(in := TRUE);
+
+	IF timeout.Q THEN
+		error := TRUE;
+		errormsg := 'Timeout';
+
+		step := 9999;
+	END_IF
+
+1100:
+	RecvByte(RxBuffer := rx);
+
+	IF RecvByte.ByteReceived THEN
+		IF RecvByte.ReceivedByte = 16#76 OR RecvByte.ReceivedByte = 16#F6 THEN (* Pulse Response *)
+			step := 1200;
+		ELSE
+			error := TRUE;
+			errormsg := 'Invalid pulse response.';
+
+			step := 9999;
+		END_IF
+	END_IF
+
+	timeout(in := TRUE);
+
+	IF timeout.Q THEN
+		error := TRUE;
+		errormsg := 'Timeout';
+
+		step := 9999;
+	END_IF
+
+1200:
+	SendByte(SendByte := 16#E3, TxBuffer := tx); (* Set Command Mode *)
+	SendByte(SendByte := 16#ED, TxBuffer := tx); (* Disarm Strong Pullup *)
+	SendByte(SendByte := 16#F1, TxBuffer := tx); (* Terminate Pulse - needed to save time. *)
+
+	step := 1300;
+
+1300:
+	RecvByte(RxBuffer := rx);
+
+	IF RecvByte.ByteReceived THEN
+		IF (RecvByte.ReceivedByte AND 16#FC) = 16#EC THEN (* Disarm 5V Strong Pullup Response *)
+			step := 9999;
+		ELSE
+			error := TRUE;
+			errormsg := 'Invalid disarm strong pullup response.';
+
+			step := 9999;
+		END_IF
+	END_IF
+
+	timeout(in := TRUE);
+
+	IF timeout.Q THEN
+		error := TRUE;
+		errormsg := 'Timeout';
+
+		step := 9999;
+	END_IF
+
+9999:
+	busy := FALSE;
+END_CASE
+END_FUNCTION_BLOCK
+
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @PATH := '\/OneWire\/Sensors' *)
+(* @OBJECTFLAGS := '0, 8' *)
+(* @SYMFILEFLAGS := '2048' *)
+FUNCTION_BLOCK DS1820ReadScratchPad
+(*
+   Reads the "scratch pad" data from the selected temperature sensor,
+   checks its CRC and calculates the temperature.
+
+   See DS18S20 / DS18B20 data sheets for details.
+*)
+VAR_INPUT
+	start: BOOL;
+
+	address: ARRAY[1..8] OF BYTE;
+END_VAR
+VAR_OUTPUT
+	busy     : BOOL;
+	error    : BOOL;
+	errormsg : STRING;
+
+	scratchpad: ARRAY[1..9] OF BYTE;
+	temperature: REAL;
+END_VAR
+VAR_IN_OUT
+	rx: ComBuffer;
+	tx: ComBuffer;
+END_VAR
+VAR
+	step: INT;
+	i: INT;
+
+	max_tries : INT := 10;
+	num_tries : INT;
+
+	SendByte: SendByte;
+	RecvByte: ReceiveByte;
+
+	scratchpad_idx: INT;
+
+	OneWireReset    : OneWireReset;
+	OneWireMatchROM : OneWireMatchROM;
+	OneWireCRC      : OneWireCRC;
+
+	timeout: TON;
+END_VAR
+(* @END_DECLARATION := '0' *)
+IF NOT start THEN
+	step := 0;
+END_IF
+
+CASE step OF
+0:
+	IF start THEN
+		busy     := TRUE;
+		error    := FALSE;
+		errormsg := '';
+
+		num_tries := 0;
+
+		step := 100;
+	END_IF
+
+100:
+	timeout(in := FALSE, pt := t#500ms);
+	timeout(in := TRUE);
+
+	OneWireReset(start := FALSE, rx := rx, tx := tx);
+
+	step := 200;
+
+200:
+	OneWireReset(start := TRUE, rx := rx, tx := tx);
+
+	IF NOT OneWireReset.busy THEN
+		IF OneWireReset.error THEN
+			errormsg := CONCAT('1-Wire reset failed. ', OneWireReset.errormsg);
+			step := 8000;
+		ELSIF OneWireReset.result = NO_PRESENCE THEN
+			errormsg := '1-Wire reset failed. No presence detected.';
+			step := 8000;
+		ELSIF OneWireReset.result = WIRE_SHORTED THEN
+			errormsg := '1-Wire reset failed. Wire shorted.';
+			step := 8000;
+		ELSE
+			step := 300;
+		END_IF
+	END_IF
+
+300:
+	OneWireMatchROM(start := FALSE, address := address, rx := rx, tx := tx);
+
+	step := 400;
+
+400:
+	OneWireMatchROM(start := TRUE, rx := rx, tx := tx);
+
+	IF NOT OneWireMatchROM.busy THEN
+		IF OneWireMatchROM.error THEN
+			errormsg := 'Match ROM failed.';
+
+			step := 8000;
+		ELSE
+			step := 500;
+		END_IF
+	END_IF
+
+500:
+	SendByte(SendByte := 16#BE, TxBuffer := tx); (* Read Scratch Pad Command *)
+
+	scratchpad_idx := 1;
+
+	step := 600;
+
+600:
+	RecvByte(RxBuffer := rx);
+
+	IF RecvByte.ByteReceived THEN
+		IF RecvByte.ReceivedByte = 16#BE THEN (* Read Scratch Pad Command Response *)
+			SendByte(SendByte := 16#FF, TxBuffer := tx); (* Send one byte to get one byte in response *)
+			step := 700;
+		ELSE
+			errormsg := 'Invalid read scratch pad response.';
+
+			step := 8000;
+		END_IF
+	END_IF
+
+	timeout(in := TRUE);
+
+	IF timeout.Q THEN
+		errormsg := 'Timeout';
+
+		step := 8000;
+	END_IF
+
+700:
+	RecvByte(RxBuffer := rx);
+
+	IF RecvByte.ByteReceived THEN
+		scratchpad[scratchpad_idx] := RecvByte.ReceivedByte;
+
+		scratchpad_idx := scratchpad_idx + 1;
+
+		IF scratchpad_idx > SIZEOF(scratchpad) THEN
+			step := 800;
+		ELSE
+			SendByte(SendByte := 16#FF, TxBuffer := tx); (* Send one byte to get one byte in response *)
+		END_IF
+	END_IF
+
+	timeout(in := TRUE);
+
+	IF timeout.Q THEN
+		errormsg := 'Timeout';
+
+		step := 8000;
+	END_IF
+
+800:
+	OneWireCRC(pData := ADR(scratchpad), n := SIZEOF(scratchpad));
+
+	IF OneWireCRC.crc <> 16#00 THEN
+		errormsg := 'Invalid CRC.';
+
+		step := 8000;
+	ELSE
+		step := 900;
+	END_IF
+
+900:
+	CASE address[1] OF
+	16#10: (* DS18S20 *)
+		temperature := SHR(scratchpad[1], 1) - 0.25 + (scratchpad[8] - scratchpad[7]) / BYTE_TO_REAL(scratchpad[8]);
+
+		IF temperature >= 85 THEN
+			error := TRUE;
+			errormsg := 'Invalid temperature.';
+		END_IF
+	16#28: (* DS18B20 *)
+		temperature := (SHL(scratchpad[2], 8) + scratchpad[1]) / 16.0;
+
+		IF temperature >= 85 THEN
+			error := TRUE;
+			errormsg := 'Invalid temperature.';
+		END_IF
+	ELSE
+		error := TRUE;
+		errormsg := 'Unknown sensor.';
+	END_CASE
+
+	step := 9999;
+
+8000: (* Retry *)
+	num_tries := num_tries + 1;
+
+	IF num_tries >= max_tries THEN
+		error := TRUE;
+		step := 9999;
+	ELSE
+		step := 100;
+	END_IF
+
+9999:
+	busy := FALSE;
+END_CASE
+END_FUNCTION_BLOCK
+
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @PATH := '\/OneWire' *)
+(* @OBJECTFLAGS := '0, 8' *)
+(* @SYMFILEFLAGS := '2048' *)
+FUNCTION_BLOCK OneWireAdapterReset
+(*
+   Resets the 1-Wire adapter by first sending a 0x00 byte at 4800 bps,
+   followed by a 0xC1 byte at 9600 bps for baud rate calibration.
+
+   Finally resets the 1-wire bus for adapter presence detection.
+
+   See DS2480B datasheet for details.
+*)
+VAR_INPUT
+	start: BOOL;
+
+	EL6xNetId: STRING;
+	EL6xSlaveAddr: INT;
+	EL6xCoEIndex: INT;
+END_VAR
+VAR_OUTPUT
+	busy: BOOL;
+	error: BOOL;
+	errormsg: STRING;
+END_VAR
+VAR_IN_OUT
+	SerialPortInputs   : EL6inData22B;
+	SerialPortOutputs  : EL6outData22B;
+	SerialPortRxBuffer : ComBuffer;
+	SerialPortTxBuffer : ComBuffer;
+END_VAR
+VAR
+	CoeWrite        : FB_EcCoESdoWrite;
+
+	BAUDRATE_4800   : BYTE := 5;
+	BAUDRATE_9600   : BYTE := 6;
+
+	DATAFRAME_8N1   : BYTE := 3;
+
+	TRUE_BYTE       : BYTE := 1;
+	FALSE_BYTE      : BYTE := 0;
+
+	SendByte        : SendByte;
+	SerialLineReset : SerialLineReset;
+	OneWireReset    : OneWireReset;
+
+	step: INT;
+	tmr: TON;
+END_VAR
+(* @END_DECLARATION := '0' *)
+IF NOT start THEN
+	step := 0;
+END_IF
+
+CASE step OF
+0:
+	IF start THEN
+		busy := TRUE;
+		error := FALSE;
+		errormsg := '';
+
+		CoeWrite.sNetId     := EL6xNetId;
+		CoeWrite.nSlaveAddr := EL6xSlaveAddr;
+		CoeWrite.nIndex     := EL6xCoEIndex;
+		CoeWrite.tTimeout   := t#1s;
+
+		step := 50;
+	END_IF
+
+50: (* Disable RTS/CTS *)
+	CoeWrite.nSubIndex  := 16#01;
+	CoeWrite.cbBufLen   := SIZEOF(FALSE_BYTE);
+	CoeWrite.pSrcBuf    := ADR(FALSE_BYTE);
+
+	CoeWrite(bExecute := FALSE);
+
+	step := 51;
+
+51:
+	CoeWrite(bExecute := TRUE);
+
+	IF NOT CoeWrite.bBusy THEN
+		IF CoeWrite.bError THEN
+			error := TRUE;
+			errormsg := 'Disabling RTS/CTS failed.';
+
+			step := 9999;
+		ELSE
+			step := 52;
+		END_IF
+	END_IF
+
+52: (* Disable XON/XOFF on Tx Data *)
+	CoeWrite.nSubIndex  := 16#02;
+	CoeWrite.cbBufLen   := SIZEOF(FALSE_BYTE);
+	CoeWrite.pSrcBuf    := ADR(FALSE_BYTE);
+
+	CoeWrite(bExecute := FALSE);
+
+	step := 53;
+
+53:
+	CoeWrite(bExecute := TRUE);
+
+	IF NOT CoeWrite.bBusy THEN
+		IF CoeWrite.bError THEN
+			error := TRUE;
+			errormsg := 'Disabling XON/XOFF on Tx Data failed.';
+
+			step := 9999;
+		ELSE
+			step := 54;
+		END_IF
+	END_IF
+
+54: (* Disable XON/XOFF on Rx Data *)
+	CoeWrite.nSubIndex  := 16#03;
+	CoeWrite.cbBufLen   := SIZEOF(FALSE_BYTE);
+	CoeWrite.pSrcBuf    := ADR(FALSE_BYTE);
+
+	CoeWrite(bExecute := FALSE);
+
+	step := 55;
+
+55:
+	CoeWrite(bExecute := TRUE);
+
+	IF NOT CoeWrite.bBusy THEN
+		IF CoeWrite.bError THEN
+			error := TRUE;
+			errormsg := 'Disabling XON/XOFF on Rx Data failed.';
+
+			step := 9999;
+		ELSE
+			step := 56;
+		END_IF
+	END_IF
+
+56: (* Disable Send FIFO Data Continuous *)
+	CoeWrite.nSubIndex  := 16#04;
+	CoeWrite.cbBufLen   := SIZEOF(FALSE_BYTE);
+	CoeWrite.pSrcBuf    := ADR(FALSE_BYTE);
+
+	CoeWrite(bExecute := FALSE);
+
+	step := 57;
+
+57:
+	CoeWrite(bExecute := TRUE);
+
+	IF NOT CoeWrite.bBusy THEN
+		IF CoeWrite.bError THEN
+			error := TRUE;
+			errormsg := 'Disabling continuous sending failed.';
+
+			step := 9999;
+		ELSE
+			step := 58;
+		END_IF
+	END_IF
+
+58: (* Disable Transfer Rate Optimization *)
+	CoeWrite.nSubIndex  := 16#05;
+	CoeWrite.cbBufLen   := SIZEOF(FALSE_BYTE);
+	CoeWrite.pSrcBuf    := ADR(FALSE_BYTE);
+
+	CoeWrite(bExecute := FALSE);
+
+	step := 59;
+
+59:
+	CoeWrite(bExecute := TRUE);
+
+	IF NOT CoeWrite.bBusy THEN
+		IF CoeWrite.bError THEN
+			error := TRUE;
+			errormsg := 'Disabling transfer rate optimization failed.';
+
+			step := 9999;
+		ELSE
+			step := 60;
+		END_IF
+	END_IF
+
+60: (* Set data frame format to 8N1 *)
+	CoeWrite.nSubIndex  := 16#15;
+	CoeWrite.cbBufLen   := SIZEOF(DATAFRAME_8N1);
+	CoeWrite.pSrcBuf    := ADR(DATAFRAME_8N1);
+
+	CoeWrite(bExecute := FALSE);
+
+	step := 61;
+
+61:
+	CoeWrite(bExecute := TRUE);
+
+	IF NOT CoeWrite.bBusy THEN
+		IF CoeWrite.bError THEN
+			error := TRUE;
+			errormsg := 'Setting data frame format to 8N1 failed.';
+
+			step := 9999;
+		ELSE
+			step := 100;
+		END_IF
+	END_IF
+
+100: (* Set baudrate to 4800bps *)
+	CoeWrite.nSubIndex  := 16#11;
+	CoeWrite.cbBufLen   := SIZEOF(BAUDRATE_4800);
+	CoeWrite.pSrcBuf    := ADR(BAUDRATE_4800);
+
+	CoeWrite(bExecute := FALSE);
+
+	step := 200;
+
+200:
+	CoeWrite(bExecute := TRUE);
+
+	IF NOT CoeWrite.bBusy THEN
+		IF CoeWrite.bError THEN
+			error := TRUE;
+			errormsg := 'Setting baudrate to 4800bps failed.';
+
+			step := 9999;
+		ELSE
+			step := 210;
+		END_IF
+	END_IF
+
+210:
+	tmr(in := FALSE, pt := t#100ms);
+
+	step := 220;
+
+220:
+	tmr(in := TRUE);
+
+	IF tmr.Q THEN
+		step := 230;
+	END_IF
+
+230: (* Reset the serial port, clear buffers,... *)
+	SerialLineReset(start     := FALSE,
+	                pComIn    := ADR(SerialPortInputs),
+	                pComOut   := ADR(SerialPortOutputs),
+	                SizeComIn := SIZEOF(SerialPortInputs),
+	                RxBuffer  := SerialPortRxBuffer,
+	                TxBuffer  := SerialPortTxBuffer);
+	step := 240;
+
+240:
+	SerialLineReset(start     := TRUE,
+	                pComIn    := ADR(SerialPortInputs),
+	                pComOut   := ADR(SerialPortOutputs),
+	                SizeComIn := SIZEOF(SerialPortInputs),
+	                RxBuffer  := SerialPortRxBuffer,
+	                TxBuffer  := SerialPortTxBuffer);
+
+	IF NOT SerialLineReset.busy THEN
+		IF SerialLineReset.error THEN
+			error := TRUE;
+			errormsg := 'Serial line reset failed.';
+
+			step := 9999;
+		ELSE
+			step := 300;
+		END_IF
+	END_IF
+
+300: (* Send a null byte at 4800bps to initiate a master reset *)
+	SendByte(SendByte := 16#00, TxBuffer := SerialPortTxBuffer);
+	SendByte(SendByte := 16#00, TxBuffer := SerialPortTxBuffer);
+	SendByte(SendByte := 16#00, TxBuffer := SerialPortTxBuffer);
+	SendByte(SendByte := 16#00, TxBuffer := SerialPortTxBuffer);
+	SendByte(SendByte := 16#00, TxBuffer := SerialPortTxBuffer);
+
+	step := 400;
+
+400: (* Wait until the null byte has been sent *)
+	IF SerialPortTxBuffer.Count = 0 THEN
+		step := 500;
+	END_IF
+
+500: (* Set baudrate back to 9600bps *)
+	CoeWrite.nSubIndex  := 16#11;
+	CoeWrite.cbBufLen   := SIZEOF(BAUDRATE_9600);
+	CoeWrite.pSrcBuf    := ADR(BAUDRATE_9600);
+
+	CoeWrite(bExecute := FALSE);
+
+	step := 600;
+
+600:
+	CoeWrite(bExecute := TRUE);
+
+	IF NOT CoeWrite.bBusy THEN
+		IF CoeWrite.bError THEN
+			error := TRUE;
+			errormsg := 'Setting baudrate to 9600bps failed.';
+
+			step := 9999;
+		ELSE
+			step := 610;
+		END_IF
+	END_IF
+
+610: (* Reset the serial port, clear buffers,... *)
+	SerialLineReset(start     := FALSE,
+	                pComIn    := ADR(SerialPortInputs),
+	                pComOut   := ADR(SerialPortOutputs),
+	                SizeComIn := SIZEOF(SerialPortInputs),
+	                RxBuffer  := SerialPortRxBuffer,
+	                TxBuffer  := SerialPortTxBuffer);
+	step := 620;
+
+620:
+	SerialLineReset(start     := TRUE,
+	                pComIn    := ADR(SerialPortInputs),
+	                pComOut   := ADR(SerialPortOutputs),
+	                SizeComIn := SIZEOF(SerialPortInputs),
+	                RxBuffer  := SerialPortRxBuffer,
+	                TxBuffer  := SerialPortTxBuffer);
+
+	IF NOT SerialLineReset.busy THEN
+		IF SerialLineReset.error THEN
+			error := TRUE;
+			errormsg := 'Serial line reset failed.';
+
+			step := 9999;
+		ELSE
+			step := 700;
+		END_IF
+	END_IF
+
+
+700: (* First byte after reset must be a reset command for baud rate calibration *)
+	SendByte(SendByte := 16#C1, TxBuffer := SerialPortTxBuffer);
+
+	step := 750;
+
+750: (* Wait until the calibration byte has been sent *)
+	IF SerialPortTxBuffer.Count = 0 THEN
+		step := 800;
+	END_IF
+
+800: (* Reset the serial port, clear buffers,... *)
+	SerialLineReset(start     := FALSE,
+	                pComIn    := ADR(SerialPortInputs),
+	                pComOut   := ADR(SerialPortOutputs),
+	                SizeComIn := SIZEOF(SerialPortInputs),
+	                RxBuffer  := SerialPortRxBuffer,
+	                TxBuffer  := SerialPortTxBuffer);
+	step := 900;
+
+900:
+	SerialLineReset(start     := TRUE,
+	                pComIn    := ADR(SerialPortInputs),
+	                pComOut   := ADR(SerialPortOutputs),
+	                SizeComIn := SIZEOF(SerialPortInputs),
+	                RxBuffer  := SerialPortRxBuffer,
+	                TxBuffer  := SerialPortTxBuffer);
+
+	IF NOT SerialLineReset.busy THEN
+		IF SerialLineReset.error THEN
+			error := TRUE;
+			errormsg := 'Serial line reset failed.';
+
+			step := 9999;
+		ELSE
+			step := 1000;
+		END_IF
+	END_IF
+
+1000: (* Check if a one wire reset works *)
+	OneWireReset(start := FALSE, rx := SerialPortRxBuffer, tx := SerialPortTxBuffer);
+
+	step := 1100;
+
+1100:
+	OneWireReset(start := TRUE, rx := SerialPortRxBuffer, tx := SerialPortTxBuffer);
+
+	IF NOT OneWireReset.busy THEN
+		IF OneWireReset.error OR OneWireReset.result = WIRE_SHORTED THEN
+			error := TRUE;
+			errormsg := '1-Wire reset failed.';
+
+			step := 9999;
+		ELSE
+			step := 9999;
+		END_IF
+	END_IF
+
+9999:
+	busy := FALSE;
+END_CASE
+END_FUNCTION_BLOCK
+
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @PATH := '\/OneWire' *)
+(* @OBJECTFLAGS := '0, 8' *)
+(* @SYMFILEFLAGS := '2048' *)
+FUNCTION_BLOCK OneWireCRC
+(*
+   Plain 1-Wire CRC calculation...
+*)
+VAR_INPUT
+	pData: UDINT;
+	n: INT;
+END_VAR
+VAR_OUTPUT
+	crc: BYTE;
+END_VAR
+VAR
+	p: POINTER TO BYTE;
+	i: INT;
+END_VAR
+VAR CONSTANT
+	crctable: ARRAY[0..255] OF BYTE := 0, 94, 188, 226, 97, 63, 221, 131, 194, 156, 126, 32, 163, 253, 31, 65,
+        157, 195, 33, 127, 252, 162, 64, 30, 95, 1, 227, 189, 62, 96, 130, 220,
+        35, 125, 159, 193, 66, 28, 254, 160, 225, 191, 93, 3, 128, 222, 60, 98,
+        190, 224, 2, 92, 223, 129, 99, 61, 124, 34, 192, 158, 29, 67, 161, 255,
+        70, 24, 250, 164, 39, 121, 155, 197, 132, 218, 56, 102, 229, 187, 89, 7,
+        219, 133, 103, 57, 186, 228, 6, 88, 25, 71, 165, 251, 120, 38, 196, 154,
+        101, 59, 217, 135, 4, 90, 184, 230, 167, 249, 27, 69, 198, 152, 122, 36,
+        248, 166, 68, 26, 153, 199, 37, 123, 58, 100, 134, 216, 91, 5, 231, 185,
+        140, 210, 48, 110, 237, 179, 81, 15, 78, 16, 242, 172, 47, 113, 147, 205,
+        17, 79, 173, 243, 112, 46, 204, 146, 211, 141, 111, 49, 178, 236, 14, 80,
+        175, 241, 19, 77, 206, 144, 114, 44, 109, 51, 209, 143, 12, 82, 176, 238,
+        50, 108, 142, 208, 83, 13, 239, 177, 240, 174, 76, 18, 145, 207, 45, 115,
+        202, 148, 118, 40, 171, 245, 23, 73, 8, 86, 180, 234, 105, 55, 213, 139,
+        87, 9, 235, 181, 54, 104, 138, 212, 149, 203, 41, 119, 244, 170, 72, 22,
+        233, 183, 85, 11, 136, 214, 52, 106, 43, 117, 151, 201, 74, 20, 246, 168,
+        116, 42, 200, 150, 21, 75, 169, 247, 182, 232, 10, 84, 215, 137, 107, 53;
+END_VAR
+(* @END_DECLARATION := '0' *)
+crc := 0;
+
+FOR i := 0 TO n-1 DO
+	p := pData + i;
+	crc := crctable[crc XOR p^];
+END_FOR
+END_FUNCTION_BLOCK
+
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @PATH := '\/OneWire' *)
+(* @OBJECTFLAGS := '0, 8' *)
+(* @SYMFILEFLAGS := '2048' *)
+FUNCTION_BLOCK OneWireMatchROM
+(*
+   Selects a sensor on the 1-Wire network ("Match ROM").
+
+   See DS2480B data sheet for details.
+*)
+VAR_INPUT
+	start: BOOL;
+
+	address: ARRAY[1..8] OF BYTE;
+END_VAR
+VAR_OUTPUT
+	busy     : BOOL;
+	error    : BOOL;
+	errormsg : STRING;
+END_VAR
+VAR_IN_OUT
+	rx: ComBuffer;
+	tx: ComBuffer;
+END_VAR
+VAR
+	step: INT;
+	i: INT;
+	countReceived: INT;
+
+	SendByte: SendByte;
+	RecvByte: ReceiveByte;
+
+	timeout: TON;
+END_VAR
+(* @END_DECLARATION := '0' *)
+IF NOT start THEN
+	step := 0;
+END_IF
+
+CASE step OF
+0:
+	IF start THEN
+		busy := TRUE;
+		error := FALSE;
+		errormsg := '';
+
+		timeout(in := FALSE, pt := t#1s);
+		timeout(in := TRUE);
+
+		SendByte(SendByte := 16#E1, TxBuffer := tx); (* Data Mode *)
+		SendByte(SendByte := 16#55, TxBuffer := tx); (* Match ROM Command *)
+
+		FOR i := 1 TO SIZEOF(address) DO
+			SendByte(SendByte := address[i], TxBuffer := tx);
+
+			IF address[i] = 16#E3 THEN (* Byte 0xE3 must be escaped / sent twice *)
+				SendByte(SendByte := address[i], TxBuffer := tx);
+			END_IF
+		END_FOR
+
+		countReceived := 0;
+
+		step := 100;
+	END_IF
+
+100:
+	RecvByte(RxBuffer := rx);
+
+	IF RecvByte.ByteReceived THEN
+		IF RecvByte.ReceivedByte = 16#55 THEN
+			step := 200;
+		ELSE
+			error := TRUE;
+			errormsg := 'Invalid Match ROM response.';
+
+			step := 9999;
+		END_IF
+	END_IF
+
+	timeout(in := TRUE);
+
+	IF timeout.Q THEN
+		error := TRUE;
+		errormsg := 'Timeout';
+
+		step := 9999;
+	END_IF
+
+200:
+	RecvByte(RxBuffer := rx);
+
+	IF RecvByte.ByteReceived THEN
+		countReceived := countReceived + 1;
+
+		(* TODO Testen was passiert, wenn 0xE3 abgesendet wurde *)
+		IF RecvByte.ReceivedByte <> address[countReceived] THEN
+			error := TRUE;
+			errormsg := 'Invalid response byte received.';
+
+			step := 9999;
+		ELSIF countReceived = SIZEOF(address) THEN
+			step := 9999;
+		END_IF
+	END_IF
+
+	timeout(in := TRUE);
+
+	IF timeout.Q THEN
+		error := TRUE;
+		errormsg := 'Timeout';
+
+		step := 9999;
+	END_IF
+
+9999:
+	busy := FALSE;
+END_CASE
+END_FUNCTION_BLOCK
+
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @PATH := '\/OneWire' *)
+(* @OBJECTFLAGS := '0, 8' *)
+(* @SYMFILEFLAGS := '2048' *)
+FUNCTION_BLOCK OneWireReset
+(*
+   Resets the 1-Wire bus.
+
+   See DS2480B data sheet for details.
+*)
+VAR_INPUT
+	start: BOOL;
+END_VAR
+VAR_OUTPUT
+	busy: BOOL;
+	error: BOOL;
+	errormsg: STRING;
+
+	result: E_OneWireResetResult;
+END_VAR
+VAR_IN_OUT
+	rx: ComBuffer;
+	tx: ComBuffer;
+END_VAR
+VAR
+	step: INT;
+
+	SendByte: SendByte;
+	RecvByte: ReceiveByte;
+
+	timeout: TON;
+END_VAR
+(* @END_DECLARATION := '0' *)
+IF NOT start THEN
+	step := 0;
+END_IF
+
+CASE step OF
+0:
+	IF start THEN
+		busy := TRUE;
+		error := FALSE;
+		errormsg := '';
+
+		timeout(in := FALSE, pt := t#1s);
+		timeout(in := TRUE);
+
+		SendByte(SendByte := 16#E3, TxBuffer := tx); (* Command Mode *)
+		SendByte(SendByte := 16#C5, TxBuffer := tx); (* Reset Command, Speed=flex *)
+
+		step := 100;
+	END_IF
+
+100:
+	RecvByte(RxBuffer := rx);
+
+	IF RecvByte.ByteReceived THEN
+		IF (RecvByte.ReceivedByte AND 16#DC) = 16#CC THEN (* Reset Command Response *)
+			CASE RecvByte.ReceivedByte AND 2#11 OF
+				2#00: result := WIRE_SHORTED;
+				2#01: result := PRESENCE;
+				2#10: result := ALARMING_PRESENCE;
+				2#11: result := NO_PRESENCE;
+			ELSE
+				error := TRUE;
+				errormsg := 'Unknown reset state.';
+			END_CASE
+		ELSE
+			error := TRUE;
+			errormsg := 'Invalid reset response.';
+		END_IF
+
+		step := 9999;
+	END_IF
+
+	timeout(in := TRUE);
+
+	IF timeout.Q THEN
+		error := TRUE;
+		errormsg := 'Timeout';
+
+		step := 9999;
+	END_IF
+
+9999:
+	busy := FALSE;
+END_CASE
+END_FUNCTION_BLOCK
+
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @PATH := '\/OneWire' *)
+(* @OBJECTFLAGS := '0, 8' *)
+(* @SYMFILEFLAGS := '2048' *)
+FUNCTION_BLOCK OneWireSkipROM
+(*
+   Selects all sensors on the 1-Wire network ("Skip ROM").
+
+   See DS2480B data sheet for details.
+*)
+VAR_INPUT
+	start: BOOL;
+END_VAR
+VAR_OUTPUT
+	busy: BOOL;
+	error: BOOL;
+	errormsg: STRING;
+END_VAR
+VAR_IN_OUT
+	rx: ComBuffer;
+	tx: ComBuffer;
+END_VAR
+VAR
+	step: INT;
+
+	SendByte: SendByte;
+	RecvByte: ReceiveByte;
+
+	timeout: TON;
+END_VAR
+(* @END_DECLARATION := '0' *)
+IF NOT start THEN
+	step := 0;
+END_IF
+
+CASE step OF
+0:
+	IF start THEN
+		busy := TRUE;
+		error := FALSE;
+		errormsg := '';
+
+		timeout(in := FALSE, pt := t#1s);
+		timeout(in := TRUE);
+
+		SendByte(SendByte := 16#E1, TxBuffer := tx); (* Data Mode *)
+		SendByte(SendByte := 16#CC, TxBuffer := tx); (* Skip ROM Command *)
+
+		step := 100;
+	END_IF
+
+100:
+	RecvByte(RxBuffer := rx);
+
+	IF RecvByte.ByteReceived THEN
+		IF RecvByte.ReceivedByte <> 16#CC THEN
+			error := TRUE;
+			errormsg := 'Invalid Skip ROM response.';
+		END_IF
+
+		step := 9999;
+	END_IF
+
+	timeout(in := TRUE);
+
+	IF timeout.Q THEN
+		error := TRUE;
+		errormsg := 'Timeout';
+
+		step := 9999;
+	END_IF
+
+9999:
+	busy := FALSE;
+END_CASE
+END_FUNCTION_BLOCK
+
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @PATH := '\/OneWire' *)
+(* @OBJECTFLAGS := '0, 8' *)
+(* @SYMFILEFLAGS := '2048' *)
+FUNCTION_BLOCK SerialLineReset
+(*
+   Resets the serial port & clears all buffers.
+*)
+VAR_INPUT
+	start: BOOL;
+	pComIn: POINTER TO BYTE;
+	pComOut: POINTER TO BYTE;
+	SizeComIn: UINT;
+END_VAR
+VAR_OUTPUT
+	busy: BOOL;
+	error: BOOL;
+	errormsg: STRING;
+END_VAR
+VAR_IN_OUT
+	RxBuffer: ComBuffer;
+	TxBuffer: ComBuffer;
+END_VAR
+VAR
+	step: INT;
+
+	ComReset: ComReset;
+	ClearComBuffer: ClearComBuffer;
+END_VAR
+(* @END_DECLARATION := '0' *)
+IF NOT start THEN
+	step := 0;
+END_IF
+
+CASE step OF
+0:
+	IF start THEN
+		busy := TRUE;
+		error := FALSE;
+		errormsg := '';
+
+		step := 100;
+	END_IF
+
+100:
+	ComReset(Execute := FALSE, pComIn := pComIn, pComOut := pComOut, SizeComIn := SizeComIn);
+
+	step := 200;
+
+200:
+	ComReset(Execute := TRUE, pComIn := pComIn, pComOut := pComOut, SizeComIn := SizeComIn);
+
+	IF NOT ComReset.Busy THEN
+		IF ComReset.Error THEN
+			error := TRUE;
+			errormsg := 'ComReset failed.';
+			step := 9999;
+		ELSE
+			step := 300;
+		END_IF
+	END_IF
+
+300:
+	ClearComBuffer(Buffer := RxBuffer);
+	ClearComBuffer(Buffer := TxBuffer);
+
+	step := 9999;
+
+9999:
+	busy := FALSE;
+END_CASE
+END_FUNCTION_BLOCK
+
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @PATH := '' *)
+(* @OBJECTFLAGS := '0, 8' *)
+(* @SYMFILEFLAGS := '2048' *)
+PROGRAM MAIN
+VAR
+	(* Serial Port Configuration *)
+	serial_port_netid          : STRING := '5.32.119.18.3.1'; (* See "System Manager" -> "Gerät 2 (EtherCAT)" -> "EtherCAT" -> "NetId" *)
+	serial_port_slave_address  : INT    := 1005;              (* See "System Manager" -> "Klemme 6 (EL6002)" -> "EtherCAT" -> "EtherCAT Adr" *)
+	serial_port_coe_index      : UINT   := 16#8000;           (* 0x8000 for serial port 1, 0x8010 for serial port 2 *)
+
+	(* 1-Wire Sensor Addresses *)
+	temp_sensor_1_address : ARRAY[1..8] OF BYTE := 16#10, 16#38, 16#9E, 16#55, 16#03, 16#08, 16#00, 16#69; (* DS18S20 *)
+	temp_sensor_2_address : ARRAY[1..8] OF BYTE := 16#10, 16#EF, 16#EF, 16#55, 16#03, 16#08, 16#00, 16#88; (* DS18S20 *)
+
+	(* Temperatures *)
+	temperature1 : REAL;
+	temperature2 : REAL;
+
+	(* 1-Wire *)
+	OneWireAdapterReset       : OneWireAdapterReset;
+
+	DS1820ConvertTemperature  : DS1820ConvertTemperature;
+	DS1820ReadScratchPad      : DS1820ReadScratchPad;
+
+	(* Serial Port *)
+	serial_port_inputs  AT %I* : EL6inData22B;
+	serial_port_outputs AT %Q* : EL6outData22B;
+
+	SerialPortControl          : SerialLineControl;
+	SerialPortRxBuffer         : ComBuffer;
+	SerialPortTxBuffer         : ComBuffer;
+
+	ClearComBuffer             : ClearComBuffer;
+
+	(* State *)
+	step : INT;
+
+	lasterror : STRING(256);
+
+	cycle_timer: TON;
+END_VAR
+
+(* @END_DECLARATION := '0' *)
+SerialPortControl(Mode      := SERIALLINEMODE_EL6_22B,
+                  pComIn    := ADR(serial_port_inputs),
+                  pComOut   := ADR(serial_port_outputs),
+                  SizeComIn := SIZEOF(serial_port_inputs),
+                  RxBuffer  := SerialPortRxBuffer,
+                  TxBuffer  := SerialPortTxBuffer);
+
+CASE step OF
+0: (* Init *)
+	temperature1 := 0;
+	temperature2 := 0;
+
+	step := 100;
+
+100: (* 1-Wire Adapter Reset / Initialization *)
+	OneWireAdapterReset(EL6xNetId          := serial_port_netid,
+                        EL6xSlaveAddr      := serial_port_slave_address,
+                        EL6xCoEIndex       := serial_port_coe_index,
+						SerialPortInputs   := serial_port_inputs,
+                        SerialPortOutputs  := serial_port_outputs,
+                        SerialPortRxBuffer := SerialPortRxBuffer,
+                        SerialPortTxBuffer := SerialPortTxBuffer,
+                        start              := FALSE);
+
+	step := 200;
+
+200:
+	OneWireAdapterReset(SerialPortInputs   := serial_port_inputs,
+                        SerialPortOutputs  := serial_port_outputs,
+                        SerialPortRxBuffer := SerialPortRxBuffer,
+                        SerialPortTxBuffer := SerialPortTxBuffer,
+                        start              := TRUE);
+
+	IF NOT OneWireAdapterReset.busy THEN
+		IF OneWireAdapterReset.error THEN
+			lasterror := CONCAT('1-Wire adapter reset failed. ', OneWireAdapterReset.errormsg);
+			step := 0;
+		ELSE
+			step := 1000;
+		END_IF
+	END_IF
+
+1000: (* Data Exchange Cycle *)
+	cycle_timer(in := FALSE, pt := t#2.5s);
+	cycle_timer(in := TRUE);
+
+	(* Clear serial line communication buffer before each cycle in case synchronization has been lost... *)
+    (* Tx- and Rx-Count should be zero after this point! *)
+	ClearComBuffer(Buffer := SerialPortRxBuffer);
+	ClearComBuffer(Buffer := SerialPortTxBuffer);
+
+	step := 1050;
+
+1050: (* Convert temperature *)
+	DS1820ConvertTemperature(start := FALSE, rx := SerialPortRxBuffer, tx := SerialPortTxBuffer);
+
+	step := 1100;
+
+1100:
+	DS1820ConvertTemperature(start := TRUE, rx := SerialPortRxBuffer, tx := SerialPortTxBuffer);
+
+	IF NOT DS1820ConvertTemperature.busy THEN
+		IF DS1820ConvertTemperature.error THEN
+			lasterror := CONCAT('Temperature conversion failed. ', DS1820ConvertTemperature.errormsg);
+
+			step := 0;
+		ELSE
+			step := 1200;
+		END_IF
+	END_IF
+
+1200: (* Read temperature of sensor 1 *)
+	DS1820ReadScratchPad(start   := FALSE,
+                         address := temp_sensor_1_address,
+                         rx      := SerialPortRxBuffer,
+                         tx      := SerialPortTxBuffer);
+
+	step := 1300;
+
+1300:
+	DS1820ReadScratchPad(start := TRUE,
+                         rx    := SerialPortRxBuffer,
+                         tx    := SerialPortTxBuffer);
+
+	IF NOT DS1820ReadScratchPad.busy THEN
+		IF DS1820ReadScratchPad.error THEN
+			lasterror := CONCAT('Failed to exchange process data with temperature sensor 1. ', DS1820ReadScratchPad.errormsg);
+			step := 0;
+		ELSE
+			temperature1 := DS1820ReadScratchPad.temperature;
+			step := 1400;
+		END_IF
+	END_IF
+
+1400: (* Read temperature of sensor 2 *)
+	DS1820ReadScratchPad(start   := FALSE,
+                         address := temp_sensor_2_address,
+                         rx      := SerialPortRxBuffer,
+                         tx      := SerialPortTxBuffer);
+
+	step := 1500;
+
+1500:
+	DS1820ReadScratchPad(start := TRUE,
+                         rx    := SerialPortRxBuffer,
+                         tx    := SerialPortTxBuffer);
+
+	IF NOT DS1820ReadScratchPad.busy THEN
+		IF DS1820ReadScratchPad.error THEN
+			lasterror := CONCAT('Failed to exchange process data with temperature sensor 2. ', DS1820ReadScratchPad.errormsg);
+			step := 0;
+		ELSE
+			temperature2 := DS1820ReadScratchPad.temperature;
+			step := 5000;
+		END_IF
+	END_IF
+
+5000: (* Data Exchange Successful. Wait & repeat... *)
+	cycle_timer(in := TRUE);
+
+	IF cycle_timer.Q THEN
+		step := 1000;
+	END_IF
+END_CASE
+
+END_PROGRAM
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @PATH := '' *)
+(* @OBJECTFLAGS := '0, 8' *)
+TYPE E_Baudrate : (Baudrate4800, Baudrate9600);
+END_TYPE
+(* @END_DECLARATION := '0' *)
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @PATH := '' *)
+(* @OBJECTFLAGS := '0, 8' *)
+TYPE E_DataFrameFormat : (DataFrame8N1);
+END_TYPE
+(* @END_DECLARATION := '0' *)
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @PATH := '' *)
+(* @OBJECTFLAGS := '0, 8' *)
+TYPE E_OneWireResetResult : (WIRE_SHORTED, PRESENCE, ALARMING_PRESENCE, NO_PRESENCE);
+END_TYPE
+(* @END_DECLARATION := '0' *)
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @GLOBAL_VARIABLE_LIST := 'Global_Variables' *)
+(* @PATH := '' *)
+(* @OBJECTFLAGS := '0, 8' *)
+(* @SYMFILEFLAGS := '2048' *)
+VAR_GLOBAL
+END_VAR
+
+(* @OBJECT_END := 'Global_Variables' *)
+(* @CONNECTIONS := Global_Variables
+FILENAME : ''
+FILETIME : 0
+EXPORT : 0
+NUMOFCONNECTIONS : 0
+*)
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @GLOBAL_VARIABLE_LIST := 'TwinCAT_Configuration' *)
+(* @PATH := '' *)
+(* @OBJECTFLAGS := '0, 8' *)
+(* @SYMFILEFLAGS := '2048' *)
+(* Generated automatically by TwinCAT - (read only) *)
+VAR_CONFIG
+	MAIN.serial_port_inputs AT %IB0 : EL6inData22B;
+	MAIN.serial_port_outputs AT %QB0 : EL6outData22B;
+END_VAR
+(* @OBJECT_END := 'TwinCAT_Configuration' *)
+(* @CONNECTIONS := TwinCAT_Configuration
+FILENAME : ''
+FILETIME : 0
+EXPORT : 0
+NUMOFCONNECTIONS : 0
+*)
+
+(* @NESTEDCOMMENTS := 'Yes' *)
+(* @GLOBAL_VARIABLE_LIST := 'Variable_Configuration' *)
+(* @PATH := '' *)
+(* @OBJECTFLAGS := '0, 8' *)
+(* @SYMFILEFLAGS := '2048' *)
+VAR_CONFIG
+END_VAR
+
+(* @OBJECT_END := 'Variable_Configuration' *)
+(* @CONNECTIONS := Variable_Configuration
+FILENAME : ''
+FILETIME : 0
+EXPORT : 0
+NUMOFCONNECTIONS : 0
+*)
+
+
+_ALARMCONFIG
+_ALARMCONFIGNEXTTEXTID : 10002
+_ALARMCONFIGFORMATS : 'HH$':$'mm$':$'ss','dd$'-$'MM$'-$'yyyy'
+_ALARMCLASSLIST : 1
+_ALARMCLASSID : 0
+_ALARMCLASSACKTYPE : 0
+_ALARMCLASSNAME : 'DEFAULT'
+_ALARMCLASSDESCRIPTION : ''
+_ALARMCLASSBGCOLORS : 16777215,16777215,16777215
+_ALARMCLASSTEXTCOLORS : 3394560,255,16711680
+_ALARMCLASSBITMAPS : '','',''
+_ALARMACTIONLIST : 0
+(* @ALARMCLASSRESETCOLORS := '_ALARMCLASSRESETCOLORS: 33023,16777215' *)
+(* @ALARMCLASSRESETBITMAP := '_ALARMCLASSRESETBITMAP: $'$'' *)
+_ALARMGROUPLISTNAME : 'System'
+_ALARMGROUPPATH : 'System'
+_ALARMGROUPLIST : 0
+_VISUALSETTINGSFLAGS : 0,0,0,0
+_VISUALSETTINGSFLAGS : '','',''
+_VISUALSETTINGSDYNTEXTFILECOUNT : 0
+
+(* @ALARMCONFIGFLAGS := '_ALARMCONFIGFLAGS: 4' *)
+(* @ALARMCONFIGGLOBALDB_STR := '_ALARMCONFIGGLOBALDB_STRINGS: $'$',$'$',$'$',$'$'' *)
+(* @ALARMCONFIGGLOBALDB_NUM := '_ALARMCONFIGGLOBALDB_NUMBERS: 0,0' *)
+_END_ALARMCONFIG
+
+
+LIBRARY
+COMlibV2.lib 3.8.16 13:29:30
+(* @LIBRARYSYMFILEINFO := '0' *)
+NumOfPOUs: 23
+_ReceiveString: 2048
+_SendString: 2048
+_strncpy: 2048
+ASC: 2048
+CHR: 2048
+ClearComBuffer: 2048
+ComReset: 2048
+Get_ComLib_Version: 2048
+KL6configuration: 2048
+KL6ReadRegisters: 2048
+KL6WriteRegisters: 2048
+M8000configuration: 2048
+ReceiveByte: 2048
+ReceiveData: 2048
+ReceiveString: 2048
+ReceiveString255: 2048
+SendByte: 2048
+SendData: 2048
+SendString: 2048
+SendString255: 2048
+SerialLineControl: 2048
+SerialLineControlADS: 2048
+SerialLineControlM8000: 2048
+NumOfGVLs: 2
+Global_Constants: 2048
+Global_Constants_ComLibVersion: 2048
+END_LIBRARY
+
+LIBRARY
+STANDARD.LIB 5.6.98 12:03:02
+(* @LIBRARYSYMFILEINFO := '0' *)
+NumOfPOUs: 20
+CONCAT: 0
+CTD: 0
+CTU: 0
+CTUD: 0
+DELETE: 0
+F_TRIG: 0
+FIND: 0
+INSERT: 0
+LEFT: 0
+LEN: 0
+MID: 0
+R_TRIG: 0
+REPLACE: 0
+RIGHT: 0
+RS: 0
+SEMA: 0
+SR: 0
+TOF: 0
+TON: 0
+TP: 0
+NumOfGVLs: 1
+'Global Variables 0': 0
+END_LIBRARY
+
+LIBRARY
+TcBase.lib 14.5.09 12:14:08
+(* @LIBRARYSYMFILEINFO := '0' *)
+NumOfPOUs: 30
+FW_AdsClearEvents: 0
+FW_AdsLogDINT: 0
+FW_AdsLogEvent: 0
+FW_AdsLogLREAL: 0
+FW_AdsLogSTR: 0
+FW_AdsRdWrt: 0
+FW_AdsRdWrtInd: 0
+FW_AdsRdWrtRes: 0
+FW_AdsRead: 0
+FW_AdsReadDeviceInfo: 0
+FW_AdsReadInd: 0
+FW_AdsReadRes: 0
+FW_AdsReadState: 0
+FW_AdsWrite: 0
+FW_AdsWriteControl: 0
+FW_AdsWriteInd: 0
+FW_AdsWriteRes: 0
+FW_DRand: 0
+FW_GetCpuAccount: 0
+FW_GetCpuCounter: 0
+FW_GetCurTaskIndex: 0
+FW_GetSystemTime: 0
+FW_GetVersionTcBase: 0
+FW_LptSignal: 0
+FW_MemCmp: 0
+FW_MemCpy: 0
+FW_MemMove: 0
+FW_MemSet: 0
+FW_PortRead: 2048
+FW_PortWrite: 2048
+NumOfGVLs: 0
+END_LIBRARY
+
+LIBRARY
+TcEtherCAT.lib 30.11.16 19:52:18
+(* @LIBRARYSYMFILEINFO := '0' *)
+NumOfPOUs: 82
+ConvertDcTimeToPathPos: 2048
+ConvertDcTimeToPos: 2048
+ConvertPathPosToDcTime: 2048
+ConvertPosToDcTime: 2048
+DCTIME_TO_DCTIMESTRUCT: 2048
+DCTIME_TO_FILETIME: 2048
+DCTIME_TO_STRING: 2048
+DCTIME_TO_SYSTEMTIME: 2048
+DCTIMESTRUCT_TO_DCTIME: 2048
+F_CheckVendorId: 2048
+F_ConvBK1120CouplerStateToString: 2048
+F_ConvExtTimeToDcTime: 2048
+F_ConvMasterDevStateToString: 2048
+F_ConvProductCodeToString: 2048
+F_ConvSlaveStateToBits: 2048
+F_ConvSlaveStateToString: 2048
+F_ConvStateToString: 2048
+F_ConvTcTimeToDcTime: 2048
+F_ConvTcTimeToExtTime: 2048
+F_GetActualDcTime: 2048
+F_GetCurDcTaskTime: 2048
+F_GetCurDcTickTime: 2048
+F_GetCurExtTime: 2048
+F_GetVersionTcEtherCAT: 2048
+FB_EcCoESdoRead: 2048
+FB_EcCoESdoReadEx: 2048
+FB_EcCoESdoWrite: 2048
+FB_EcCoESdoWriteEx: 2048
+FB_EcDcTickTimeBaseCalc: 2048
+FB_EcDcTimeCtrl: 2048
+FB_EcDcTimeCtrl.A_GetDay: 2048
+FB_EcDcTimeCtrl.A_GetDayOfWeek: 2048
+FB_EcDcTimeCtrl.A_GetHour: 2048
+FB_EcDcTimeCtrl.A_GetMicro: 2048
+FB_EcDcTimeCtrl.A_GetMilli: 2048
+FB_EcDcTimeCtrl.A_GetMinute: 2048
+FB_EcDcTimeCtrl.A_GetMonth: 2048
+FB_EcDcTimeCtrl.A_GetNano: 2048
+FB_EcDcTimeCtrl.A_GetSecond: 2048
+FB_EcDcTimeCtrl.A_GetYear: 2048
+FB_EcExtSyncCalcTimeDiff: 2048
+FB_EcExtSyncCheck: 2048
+FB_EcFoeAccess: 2048
+FB_EcFoeClose: 2048
+FB_EcFoeLoad: 2048
+FB_EcFoeOpen: 2048
+FB_EcGetAllSlaveAbnormalStateChanges: 2048
+FB_EcGetAllSlaveAddr: 2048
+FB_EcGetAllSlaveCrcErrors: 2048
+FB_EcGetAllSlavePresentStateChanges: 2048
+FB_EcGetAllSlaveStates: 2048
+FB_EcGetConfSlaves: 2048
+FB_EcGetLastProtErrInfo: 2048
+FB_EcGetMasterDevState: 2048
+FB_EcGetMasterState: 2048
+FB_EcGetScannedSlaves: 2048
+FB_EcGetSlaveCount: 2048
+FB_EcGetSlaveCrcError: 2048
+FB_EcGetSlaveCrcErrorEx: 2048
+FB_EcGetSlaveIdentity: 2048
+FB_EcGetSlaveState: 2048
+FB_EcGetSlaveTopologyInfo: 2048
+FB_EcLogicalReadCmd: 2048
+FB_EcLogicalWriteCmd: 2048
+FB_EcMasterFrameCount: 2048
+FB_EcMasterFrameStatistic: 2048
+FB_EcMasterFrameStatisticClearCRC: 2048
+FB_EcMasterFrameStatisticClearFrames: 2048
+FB_EcMasterFrameStatisticClearTxRxErr: 2048
+FB_EcPhysicalReadCmd: 2048
+FB_EcPhysicalWriteCmd: 2048
+FB_EcReqMasterState: 2048
+FB_EcReqSlaveState: 2048
+FB_EcSetMasterState: 2048
+FB_EcSetSlaveState: 2048
+FB_EcSoERead: 2048
+FB_EcSoEWrite: 2048
+FB_SoERead_ByDriveRef: 2048
+FB_SoEWrite_ByDriveRef: 2048
+FILETIME_TO_DCTIME: 2048
+STRING_TO_DCTIME: 2048
+SYSTEMTIME_TO_DCTIME: 2048
+NumOfGVLs: 1
+Globale_Variablen: 2048
+END_LIBRARY
+
+LIBRARY
+TcSystem.lib 7.6.16 11:01:22
+(* @LIBRARYSYMFILEINFO := '0' *)
+NumOfPOUs: 84
+ADSCLEAREVENTS: 0
+ADSLOGDINT: 0
+ADSLOGEVENT: 0
+ADSLOGLREAL: 0
+ADSLOGSTR: 0
+ADSRDDEVINFO: 0
+ADSRDSTATE: 0
+ADSRDWRT: 0
+ADSRDWRTEX: 0
+ADSRDWRTIND: 0
+ADSRDWRTRES: 0
+ADSREAD: 0
+ADSREADEX: 0
+ADSREADIND: 0
+ADSREADRES: 0
+ADSWRITE: 0
+ADSWRITEIND: 0
+ADSWRITERES: 0
+ADSWRTCTL: 0
+AnalyzeExpression: 2048
+AnalyzeExpressionCombined: 2048
+AnalyzeExpressionTable: 2048
+AppendErrorString: 2048
+BAVERSION_TO_DWORD: 2048
+CLEARBIT32: 0
+CSETBIT32: 0
+DRAND: 0
+F_CompareFwVersion: 2048
+F_CreateAmsNetId: 0
+F_CreateIPv4Addr: 2048
+F_GetStructMemberAlignment: 2048
+F_GetVersionTcSystem: 0
+F_IOPortRead: 2048
+F_IOPortWrite: 2048
+F_ScanAmsNetIds: 2048
+F_ScanIPv4AddrIds: 2048
+F_SplitPathName: 2048
+F_ToASC: 2048
+F_ToCHR: 2048
+FB_AdsReadWriteList: 2048
+FB_BaDeviceIoControl: 2048
+FB_BaGenGetVersion: 2048
+FB_CreateDir: 2048
+FB_EOF: 0
+FB_FileClose: 0
+FB_FileDelete: 0
+FB_FileGets: 0
+FB_FileOpen: 0
+FB_FilePuts: 0
+FB_FileRead: 0
+FB_FileRename: 0
+FB_FileSeek: 0
+FB_FileTell: 0
+FB_FileWrite: 0
+FB_PcWatchdog: 2048
+FB_PcWatchdog_BAPI: 2048
+FB_RemoveDir: 2048
+FB_SetLedColor_BAPI: 2048
+FB_SimpleAdsLogEvent: 2048
+FILECLOSE: 0
+FILEOPEN: 0
+FILEREAD: 0
+FILESEEK: 0
+FILEWRITE: 0
+FW_CallGenericFb: 2048
+FW_CallGenericFbEx: 2048
+FW_CallGenericFun: 2048
+GETBIT32: 0
+GETCPUACCOUNT: 0
+GETCPUCOUNTER: 0
+GETCURTASKINDEX: 0
+GETSYSTEMTIME: 0
+GETTASKTIME: 2048
+LPTSIGNAL: 0
+MEMCMP: 0
+MEMCPY: 0
+MEMMOVE: 0
+MEMSET: 0
+ROL32: 0
+ROR32: 0
+SETBIT32: 0
+SFCActionControl: 0
+SHL32: 0
+SHR32: 0
+NumOfGVLs: 1
+Global_Variables: 0
+END_LIBRARY
+
+LIBRARY
+TcUtilities.lib 3.2.16 16:08:58
+(* @LIBRARYSYMFILEINFO := '0' *)
+NumOfPOUs: 330
+ARG_TO_CSVFIELD: 2048
+BCD_TO_DEC: 0
+BE128_TO_HOST: 2048
+BE16_TO_HOST: 2048
+BE32_TO_HOST: 2048
+BE64_TO_HOST: 2048
+BYTE_TO_BINSTR: 2048
+BYTE_TO_DECSTR: 2048
+BYTE_TO_HEXSTR: 2048
+BYTE_TO_LREALEX: 2048
+BYTE_TO_OCTSTR: 2048
+BYTEARR_TO_MAXSTRING: 2048
+CSVFIELD_TO_ARG: 2048
+CSVFIELD_TO_STRING: 2048
+DATA_TO_HEXSTR: 2048
+DCF77_TIME: 2048
+DCF77_TIME_EX: 2048
+DEC_TO_BCD: 0
+DEG_TO_RAD: 0
+DINT_TO_DECSTR: 2048
+DT_TO_FILETIME: 2048
+DT_TO_SYSTEMTIME: 0
+DWORD_TO_BINSTR: 2048
+DWORD_TO_DECSTR: 2048
+DWORD_TO_HEXSTR: 2048
+DWORD_TO_LREALEX: 2048
+DWORD_TO_OCTSTR: 2048
+F_ARGCMP: 2048
+F_ARGCPY: 2048
+F_ARGIsZero: 2048
+F_BIGTYPE: 2048
+F_BOOL: 2048
+F_BYTE: 0
+F_BYTE_TO_CRC16_CCITT: 2048
+F_CheckSum16: 0
+F_CRC16_CCITT: 0
+F_CreateHashTableHnd: 2048
+F_CreateLinkedListHnd: 2048
+F_DATA_TO_CRC16_CCITT: 2048
+F_DINT: 0
+F_DWORD: 0
+F_FormatArgToStr: 2048
+F_GetDayOfMonthEx: 2048
+F_GetDayOfWeek: 2048
+F_GetDOYOfYearMonthDay: 2048
+F_GetFloatRec: 2048
+F_GetMaxMonthDays: 2048
+F_GetMonthOfDOY: 2048
+F_GetVersionTcUtilities: 0
+F_GetWeekOfTheYear: 2048
+F_HUGE: 2048
+F_INT: 0
+F_LARGE: 2048
+F_LREAL: 0
+F_LTrim: 2048
+F_PVOID: 2048
+F_REAL: 0
+F_RTrim: 2048
+F_SINT: 0
+F_STRING: 0
+F_SwapReal: 0
+F_SwapRealEx: 2048
+F_ToLCase: 2048
+F_ToUCase: 2048
+F_TranslateFileTimeBias: 2048
+F_UDINT: 0
+F_UHUGE: 2048
+F_UINT: 0
+F_ULARGE: 2048
+F_USINT: 0
+F_WORD: 0
+F_YearIsLeapYear: 2048
+FB_AddRouteEntry: 2048
+FB_AmsLogger: 2048
+FB_BasicPID: 0
+FB_BufferedTextFileWriter: 2048
+FB_BufferedTextFileWriter.A_Reset: 2048
+FB_ConnectScopeServer: 2048
+FB_CSVMemBufferReader: 2048
+FB_CSVMemBufferWriter: 2048
+FB_DbgOutputCtrl: 2048
+FB_DbgOutputCtrl.A_Log: 2048
+FB_DbgOutputCtrl.A_LogHex: 2048
+FB_DbgOutputCtrl.A_Reset: 2048
+FB_DisconnectScopeServer: 2048
+FB_EnumFindFileEntry: 2048
+FB_EnumFindFileList: 2048
+FB_EnumRouteEntry: 2048
+FB_EnumStringNumbers: 2048
+FB_FileRingBuffer: 2048
+FB_FileRingBuffer.A_AddTail: 2048
+FB_FileRingBuffer.A_Close: 2048
+FB_FileRingBuffer.A_Create: 2048
+FB_FileRingBuffer.A_GetHead: 2048
+FB_FileRingBuffer.A_Open: 2048
+FB_FileRingBuffer.A_RemoveHead: 2048
+FB_FileRingBuffer.A_Reset: 2048
+FB_FileTimeToTzSpecificLocalTime: 2048
+FB_FileTimeToTzSpecificLocalTime.A_Reset: 2048
+FB_FormatString: 0
+FB_GetAdaptersInfo: 2048
+FB_GetDeviceIdentification: 2048
+FB_GetDeviceIdentificationEx: 2048
+FB_GetHostAddrByName: 2048
+FB_GetHostName: 2048
+FB_GetLocalAmsNetId: 2048
+FB_GetRouterStatusInfo: 2048
+FB_GetTimeZoneInformation: 2048
+FB_HashTableCtrl: 2048
+FB_HashTableCtrl.A_Add: 2048
+FB_HashTableCtrl.A_GetFirst: 2048
+FB_HashTableCtrl.A_GetIndexAtPosPtr: 2048
+FB_HashTableCtrl.A_GetNext: 2048
+FB_HashTableCtrl.A_Lookup: 2048
+FB_HashTableCtrl.A_Remove: 2048
+FB_HashTableCtrl.A_RemoveAll: 2048
+FB_HashTableCtrl.A_RemoveFirst: 2048
+FB_HashTableCtrl.A_Reset: 2048
+FB_LinkedListCtrl: 2048
+FB_LinkedListCtrl.A_AddHeadValue: 2048
+FB_LinkedListCtrl.A_AddTailValue: 2048
+FB_LinkedListCtrl.A_FindNext: 2048
+FB_LinkedListCtrl.A_FindPrev: 2048
+FB_LinkedListCtrl.A_GetHead: 2048
+FB_LinkedListCtrl.A_GetIndexAtPosPtr: 2048
+FB_LinkedListCtrl.A_GetNext: 2048
+FB_LinkedListCtrl.A_GetPrev: 2048
+FB_LinkedListCtrl.A_GetTail: 2048
+FB_LinkedListCtrl.A_RemoveHeadValue: 2048
+FB_LinkedListCtrl.A_RemoveTailValue: 2048
+FB_LinkedListCtrl.A_RemoveValueAtPosPtr: 2048
+FB_LinkedListCtrl.A_Reset: 2048
+FB_LinkedListCtrl.A_SetValueAtPosPtr: 2048
+FB_LocalSystemTime: 2048
+FB_MemBufferMerge: 2048
+FB_MemBufferSplit: 2048
+FB_MemRingBuffer: 2048
+FB_MemRingBuffer.A_AddTail: 2048
+FB_MemRingBuffer.A_GetHead: 2048
+FB_MemRingBuffer.A_RemoveHead: 2048
+FB_MemRingBuffer.A_Reset: 2048
+FB_MemRingBufferEx: 2048
+FB_MemRingBufferEx.A_AddTail: 2048
+FB_MemRingBufferEx.A_FreeHead: 2048
+FB_MemRingBufferEx.A_GetFreeSize: 2048
+FB_MemRingBufferEx.A_GetHead: 2048
+FB_MemRingBufferEx.A_Reset: 2048
+FB_MemStackBuffer: 2048
+FB_MemStackBuffer.A_Pop: 2048
+FB_MemStackBuffer.A_Push: 2048
+FB_MemStackBuffer.A_Reset: 2048
+FB_MemStackBuffer.A_Top: 2048
+FB_RegQueryValue: 0
+FB_RegSetValue: 0
+FB_RemoveRouteEntry: 2048
+FB_ResetScopeServerControl: 2048
+FB_SaveScopeServerData: 2048
+FB_ScopeServerControl: 2048
+FB_SetTimeZoneInformation: 2048
+FB_StartScopeServer: 2048
+FB_StopScopeServer: 2048
+FB_StringRingBuffer: 2048
+FB_StringRingBuffer.A_AddTail: 2048
+FB_StringRingBuffer.A_GetHead: 2048
+FB_StringRingBuffer.A_RemoveHead: 2048
+FB_StringRingBuffer.A_Reset: 2048
+FB_SystemTimeToTzSpecificLocalTime: 2048
+FB_SystemTimeToTzSpecificLocalTime.A_Reset: 2048
+FB_TextFileRingBuffer: 2048
+FB_TextFileRingBuffer.A_AddTail: 2048
+FB_TextFileRingBuffer.A_Close: 2048
+FB_TextFileRingBuffer.A_Open: 2048
+FB_TextFileRingBuffer.A_Reset: 2048
+FB_TranslateLocalTimeToUtcByZoneID: 2048
+FB_TranslateLocalTimeToUtcByZoneID.A_Reset: 2048
+FB_TranslateUtcToLocalTimeByZoneID: 2048
+FB_TranslateUtcToLocalTimeByZoneID.A_Reset: 2048
+FB_TzSpecificLocalTimeToFileTime: 2048
+FB_TzSpecificLocalTimeToFileTime.A_Reset: 2048
+FB_TzSpecificLocalTimeToSystemTime: 2048
+FB_TzSpecificLocalTimeToSystemTime.A_Reset: 2048
+FB_WritePersistentData: 2048
+FILETIME_TO_DT: 2048
+FILETIME_TO_SYSTEMTIME: 2048
+FIX16_TO_LREAL: 2048
+FIX16_TO_WORD: 2048
+FIX16Add: 2048
+FIX16Align: 2048
+FIX16Div: 2048
+FIX16Mul: 2048
+FIX16Sub: 2048
+GetRemotePCInfo: 0
+GUID_TO_REGSTRING: 2048
+GUID_TO_STRING: 2048
+GuidsEqualByVal: 2048
+HEXASCNIBBLE_TO_BYTE: 2048
+HEXCHRNIBBLE_TO_BYTE: 2048
+HEXSTR_TO_DATA: 2048
+HOST_TO_BE128: 2048
+HOST_TO_BE16: 2048
+HOST_TO_BE32: 2048
+HOST_TO_BE64: 2048
+INT64_TO_LREAL: 2048
+Int64Add64: 2048
+Int64Add64Ex: 2048
+Int64Cmp64: 2048
+Int64Div64Ex: 2048
+Int64IsZero: 2048
+Int64Negate: 2048
+Int64Not: 2048
+Int64Sub64: 2048
+IsFinite: 2048
+LARGE_INTEGER: 2048
+LARGE_TO_ULARGE: 2048
+LREAL_TO_FIX16: 2048
+LREAL_TO_FMTSTR: 2048
+LREAL_TO_INT64: 2048
+LREAL_TO_UINT64: 2048
+MAXSTRING_TO_BYTEARR: 2048
+NT_AbortShutdown: 0
+NT_GetTime: 0
+NT_Reboot: 0
+NT_SetLocalTime: 2048
+NT_SetTimeToRTCTime: 0
+NT_Shutdown: 0
+NT_StartProcess: 0
+OTSTRUCT_TO_TIME: 0
+PBOOL_TO_BOOL: 2048
+PBYTE_TO_BYTE: 2048
+PDATE_TO_DATE: 2048
+PDINT_TO_DINT: 2048
+PDT_TO_DT: 2048
+PDWORD_TO_DWORD: 2048
+PHUGE_TO_HUGE: 2048
+PINT_TO_INT: 2048
+PLARGE_TO_LARGE: 2048
+PLC_ReadSymInfo: 0
+PLC_ReadSymInfoByName: 0
+PLC_ReadSymInfoByNameEx: 0
+PLC_Reset: 0
+PLC_Start: 0
+PLC_Stop: 0
+PLREAL_TO_LREAL: 2048
+PMAXSTRING_TO_MAXSTRING: 2048
+PREAL_TO_REAL: 2048
+Profiler: 0
+PSINT_TO_SINT: 2048
+PSTRING_TO_STRING: 2048
+PTIME_TO_TIME: 2048
+PTOD_TO_TOD: 2048
+PUDINT_TO_UDINT: 2048
+PUHUGE_TO_UHUGE: 2048
+PUINT64_TO_UINT64: 2048
+PUINT_TO_UINT: 2048
+PULARGE_TO_ULARGE: 2048
+PUSINT_TO_USINT: 2048
+PVOID_TO_BINSTR: 2048
+PVOID_TO_DECSTR: 2048
+PVOID_TO_HEXSTR: 2048
+PVOID_TO_OCTSTR: 2048
+PVOID_TO_STRING: 2048
+PWORD_TO_WORD: 2048
+RAD_TO_DEG: 0
+REGSTRING_TO_GUID: 2048
+ROUTETRANSPORT_TO_STRING: 2048
+RTC: 2048
+RTC_EX: 2048
+RTC_EX2: 2048
+ScopeASCIIExport: 0
+ScopeExit: 2048
+ScopeGetRecordLen: 0
+ScopeGetState: 0
+ScopeLoadFile: 0
+ScopeManualTrigger: 0
+ScopeSaveAs: 2048
+ScopeSetOffline: 0
+ScopeSetOnline: 0
+ScopeSetRecordLen: 0
+ScopeViewExport: 0
+STRING_TO_CSVFIELD: 2048
+STRING_TO_GUID: 2048
+STRING_TO_PVOID: 2048
+STRING_TO_SYSTEMTIME: 2048
+STRING_TO_UINT64: 2048
+SYSTEMTIME_TO_DT: 0
+SYSTEMTIME_TO_FILETIME: 2048
+SYSTEMTIME_TO_STRING: 2048
+TC_Config: 2048
+TC_CpuUsage: 0
+TC_Restart: 0
+TC_Stop: 0
+TC_SysLatency: 0
+TIME_TO_OTSTRUCT: 0
+UDINT_TO_LREALEX: 2048
+UInt32x32To64: 2048
+UINT64_TO_LREAL: 2048
+UINT64_TO_STRING: 2048
+UInt64Add64: 2048
+UInt64Add64Ex: 2048
+UInt64And: 2048
+UInt64Cmp64: 2048
+UInt64Div16Ex: 2048
+UInt64Div64: 2048
+UInt64Div64Ex: 2048
+UInt64isZero: 2048
+UInt64Limit: 2048
+UInt64Max: 2048
+UInt64Min: 2048
+UInt64Mod64: 2048
+UInt64Mul64: 2048
+UInt64Mul64Ex: 2048
+UInt64Not: 2048
+UInt64Or: 2048
+UInt64Rol: 2048
+UInt64Ror: 2048
+UInt64Shl: 2048
+UInt64Shr: 2048
+UInt64Sub64: 2048
+UInt64Xor: 2048
+UINT_TO_LREALEX: 2048
+ULARGE_INTEGER: 2048
+ULARGE_TO_LARGE: 2048
+USINT_TO_LREALEX: 2048
+WORD_TO_BINSTR: 2048
+WORD_TO_DECSTR: 2048
+WORD_TO_FIX16: 2048
+WORD_TO_HEXSTR: 2048
+WORD_TO_LREALEX: 2048
+WORD_TO_OCTSTR: 2048
+WritePersistentData: 0
+NumOfGVLs: 1
+Global_Variables: 0
+END_LIBRARY
+
+PLC_CONFIGURATION
+_ELEMENT 15700
+_ELEMENT_END
+PLC_END
+
+
+RESOURCE
+
+TASK MAIN (PRIORITY := 0, INTERVAL := T#1ms);
+MAIN();
+{Additional_info : 1,0,0,0,1,4294967295}
+END_TASK
+
+END_RESOURCE
+
+
+_WORKSPACE
+_GLOBALVISUALSETTINGS
+_VISUALSETTINGSFLAGS : 0,0,0,0
+_VISUALSETTINGSFLAGS : '','',''
+_VISUALSETTINGSDYNTEXTFILECOUNT : 0
+_VISUALBITMAPLISTCOUNT : 0
+_END_GLOBALVISUALSETTINGS
+_END_WORKSPACE
