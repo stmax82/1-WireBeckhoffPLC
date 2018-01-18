@@ -1,5 +1,4 @@
-# 1-WireBeckhoffPLC
-1-Wire Communication for Beckhoff PLCs
+# 1-Wire Communication with Beckhoff PLCs
 
 Currently supported 1-Wire adapters:
 
